@@ -1,52 +1,42 @@
 import os
 import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-from ftplib import FTP
+from aiohttp import web
+from aiogram import Bot, Dispatcher, types
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-# Bunny credentials
-BUNNY_FTP_HOST = "storage.bunnycdn.com"
-BUNNY_STORAGE_ZONE = os.getenv("BUNNY_ZONE", "Ben-10")
-BUNNY_USERNAME = os.getenv("BUNNY_USER", "Ben-10")
-BUNNY_PASSWORD = os.getenv("BUNNY_PASSWORD", "your-password")
-
-# Telegram bot token
-BOT_TOKEN = os.getenv("BOT_TOKEN", "your-telegram-bot-token")
-
+# Enable logging
 logging.basicConfig(level=logging.INFO)
 
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    video = update.message.video or update.message.document
-    if not video:
-        await update.message.reply_text("Please send a video.")
-        return
+# Load Telegram Bot Token from Railway environment variable
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-    file = await context.bot.get_file(video.file_id)
-    file_name = video.file_name or "video.mp4"
-    local_path = f"/tmp/{file_name}"
+# Create bot and dispatcher
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
-    await update.message.reply_text("⬇ Downloading from Telegram...")
-    await file.download_to_drive(local_path)
+# Handle all incoming messages
+@dp.message()
+async def echo_handler(message: types.Message):
+    logging.info(f"Received message: {message.text}")
+    await message.answer("✅ Got your message!")
 
-    await update.message.reply_text("⬆ Uploading to Bunny.net...")
+# Health check route (for browser or Railway status page)
+async def health(request):
+    return web.Response(text="✅ Bot is running!")
 
-    try:
-        ftp = FTP(BUNNY_FTP_HOST)
-        ftp.login(BUNNY_USERNAME, BUNNY_PASSWORD)
-        ftp.cwd(f"/{BUNNY_STORAGE_ZONE}")
+# Set webhook when server starts
+async def on_startup(app):
+    webhook_url = f"https://{os.getenv('RAILWAY_STATIC_URL')}/"
+    await bot.set_webhook(webhook_url)
+    logging.info(f"🚀 Webhook set to: {webhook_url}")
 
-        with open(local_path, "rb") as f:
-            ftp.storbinary(f"STOR {file_name}", f)
+# Create web app and configure webhook routes
+app = web.Application()
+app.router.add_get("/", health)  # Optional route for / test
+SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
+setup_application(app, dp, bot=bot)
+app.on_startup.append(on_startup)
 
-        ftp.quit()
-        await update.message.reply_text(f"✅ Uploaded to Bunny CDN!\nURL: https://{BUNNY_STORAGE_ZONE}.b-cdn.net/{file_name}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Upload failed: {e}")
-    finally:
-        if os.path.exists(local_path):
-            os.remove(local_path)
-
+# Run the bot web server
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
-    app.run_polling()
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
