@@ -25,23 +25,49 @@ if not all(required_vars):
 bot = Bot(token=TELEGRAM_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 
-# Handle all messages
 @dp.message()
-async def handle_video_link(message: types.Message):
-    url = message.text.strip()
+async def handle_link(message: types.Message):
+    text = message.text.strip()
+    logging.info(f"📩 Received: {text}")
 
-    if not url.startswith("http"):
-        await message.answer("❌ Please send a direct video URL.")
+    parts = text.split()
+    if len(parts) != 2:
+        await message.reply("❌ Send in format:\n<filename>.mp4 <telegram_link>")
         return
 
-    logging.info(f"📩 Received: {url}")
-    await message.answer("⬇️ Downloading video...")
+    filename, file_link = parts
+    if not filename.endswith(".mp4"):
+        await message.reply("❌ Filename must end with .mp4")
+        return
+
+    await message.reply("⏳ Downloading and uploading...")
 
     try:
-        # Extract filename from link
-        base_name = url.split("/")[-1].split("?")[0]
-        if not base_name.endswith(".mp4"):
-            base_name += ".mp4"
+        # download from Telegram link
+        async with aiohttp.ClientSession() as session:
+            async with session.get(file_link) as resp:
+                if resp.status != 200:
+                    await message.reply("❌ Failed to download the video.")
+                    return
+                data = await resp.read()
+
+        # Upload to BunnyCDN
+        upload_url = f"https://storage.bunnycdn.com/{BUNNY_STORAGE_ZONE}/{filename}"
+        headers = {
+            "AccessKey": BUNNY_ACCESS_KEY,
+            "Content-Type": "application/octet-stream",
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.put(upload_url, data=data, headers=headers) as resp:
+                if resp.status == 201:
+                    cdn_url = f"https://{BUNNY_PULL_ZONE}/{filename}"
+                    await message.reply(f"✅ Uploaded successfully:\n{cdn_url}")
+                else:
+                    await message.reply(f"❌ Upload failed with status {resp.status}")
+    except Exception as e:
+        logging.error(str(e))
+        await message.reply("❌ An error occurred while uploading.")
 
         # Download the video
         async with aiohttp.ClientSession() as session:
