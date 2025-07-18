@@ -1,4 +1,2 @@
-aiohttp
 aiogram==3.4.1
-python-dotenv
-requests
+aiohttp==3.9.5
