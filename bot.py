@@ -1,56 +1,48 @@
 import os
 import logging
-from aiogram import Bot, Dispatcher, Router, types
+from aiohttp import web
+from aiogram import Bot, Dispatcher, types, Router
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import web
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # Logging
 logging.basicConfig(level=logging.INFO)
 logging.info("🚀 bot.py has started")
 
-# Environment
+# Load from env
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 if not TELEGRAM_TOKEN or not WEBHOOK_URL:
     raise Exception("❌ TELEGRAM_TOKEN or WEBHOOK_URL not set.")
 
-# Bot setup
+# Initialize bot and dispatcher
 bot = Bot(token=TELEGRAM_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
-
-# Router
 router = Router()
 dp.include_router(router)
 
-# Health check (for Railway 502 prevention)
-async def health(request):
-    return web.Response(text="✅ Bot is alive")
-
-# Message handler
+# Simple message handler
 @router.message()
-async def handle_all(message: types.Message):
-    logging.info(f"📨 Message from {message.from_user.id}: {message.text}")
-    await message.answer("✅ Message received!")
+async def handle_message(message: types.Message):
+    logging.info(f"📨 Received: {message.text}")
+    await message.answer("✅ Received your message!")
 
-# Webhook startup
-async def on_startup(app):
+# Startup
+async def on_startup(bot: Bot):
     await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"✅ Webhook set: {WEBHOOK_URL}")
+    logging.info(f"✅ Webhook set to {WEBHOOK_URL}")
 
-# Webhook shutdown
-async def on_shutdown(app):
+# Shutdown
+async def on_shutdown(bot: Bot):
     await bot.delete_webhook()
-    await bot.session.close()
-    logging.info("🛑 Bot shutdown")
+    logging.info("🛑 Webhook deleted")
 
-# aiohttp app
+# Create aiohttp app and attach bot webhook
 app = web.Application()
-app.router.add_get("/", health)
-app.router.add_post("/", dp.webhook_handler(bot))
-app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown)
+setup_application(app, dp, bot, on_startup=on_startup, on_shutdown=on_shutdown)
+app.router.add_get("/", lambda request: web.Response(text="✅ Bot running"))
 
 if __name__ == "__main__":
     web.run_app(app, port=8000)
