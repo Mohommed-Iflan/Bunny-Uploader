@@ -5,7 +5,8 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import setup_application
-from aiohttp import web, ClientSession, ClientTimeout, ContentLengthError
+from aiohttp import web, ClientSession, ClientTimeout
+from aiohttp.client_exceptions import ContentLengthError
 from aiogram.types import BotCommand
 from aiogram.enums.dice_emoji import DiceEmoji
 
