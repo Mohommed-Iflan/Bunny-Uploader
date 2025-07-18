@@ -1,53 +1,94 @@
 import os
+import aiohttp
 import logging
-from aiohttp import web
-from aiogram import Bot, Dispatcher, types, Router
+from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-# Logging
 logging.basicConfig(level=logging.INFO)
 logging.info("🚀 bot.py has started")
 
-# Load from env
+# Environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+BUNNY_API_KEY = os.getenv("BUNNY_API_KEY")
+BUNNY_STORAGE_ZONE = os.getenv("BUNNY_STORAGE_ZONE")
+BUNNY_STORAGE_HOST = os.getenv("BUNNY_STORAGE_HOST")  # e.g., storage.bunnycdn.com
 
-if not TELEGRAM_TOKEN or not WEBHOOK_URL:
-    raise Exception("❌ TELEGRAM_TOKEN or WEBHOOK_URL not set.")
+# Basic check
+if not all([TELEGRAM_TOKEN, WEBHOOK_URL, BUNNY_API_KEY, BUNNY_STORAGE_ZONE, BUNNY_STORAGE_HOST]):
+    raise Exception("❌ Missing environment variables.")
 
-# Bot and Dispatcher
 bot = Bot(token=TELEGRAM_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
-router = Router()
-dp.include_router(router)
 
-# Message handler
-@router.message()
-async def handle_message(message: types.Message):
-    logging.info(f"📩 Received: {message.text}")
-    await message.answer("✅ Message received!")
+# Function to download and upload video
+async def upload_to_bunny(video_url: str, filename: str) -> str:
+    try:
+        # Step 1: Download the video
+        async with aiohttp.ClientSession() as session:
+            async with session.get(video_url) as resp:
+                if resp.status != 200:
+                    raise Exception(f"Download failed: {resp.status}")
+                video_data = await resp.read()
 
-# Startup and Shutdown
-async def on_startup(app: web.Application):
+        # Step 2: Upload to Bunny
+        upload_url = f"https://{BUNNY_STORAGE_HOST}/{BUNNY_STORAGE_ZONE}/{filename}"
+        headers = {
+            "AccessKey": BUNNY_API_KEY,
+            "Content-Type": "application/octet-stream"
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.put(upload_url, data=video_data, headers=headers) as resp:
+                if resp.status not in [201, 200]:
+                    raise Exception(f"Bunny upload failed: {resp.status}")
+        
+        # Return streaming link
+        return f"https://{BUNNY_STORAGE_HOST.replace('storage.', 'video.')}/{filename}"
+
+    except Exception as e:
+        logging.error(f"⚠️ Error during upload: {e}")
+        return f"❌ Upload failed: {str(e)}"
+
+# Main message handler
+@dp.message()
+async def handle_all(message: types.Message):
+    text = message.text.strip()
+
+    if not text.startswith("http"):
+        await message.answer("⚠️ Please send a valid direct video link.")
+        return
+
+    logging.info(f"📩 Received: {text}")
+    filename = text.split("/")[-1].split("?")[0]  # Extract filename from URL
+
+    await message.answer("⏳ Uploading your video to BunnyCDN...")
+
+    result = await upload_to_bunny(text, filename)
+
+    await message.answer(result)
+
+# Webhook startup
+async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"✅ Webhook set to: {WEBHOOK_URL}")
+    logging.info(f"✅ Webhook set: {WEBHOOK_URL}")
 
-async def on_shutdown(app: web.Application):
+# Webhook shutdown
+async def on_shutdown(app):
     await bot.delete_webhook()
-    logging.info("🛑 Webhook deleted")
+    await bot.session.close()
+    logging.info("🛑 Bot shutdown")
 
-# AIOHTTP app
+# Web server config
 app = web.Application()
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
-# Handle Telegram updates
+# Setup webhook route
 SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
-
-# Optional home page
-app.router.add_get("/", lambda request: web.Response(text="✅ Bot is running"))
+setup_application(app, dp)
 
 if __name__ == "__main__":
     web.run_app(app, port=8000)
