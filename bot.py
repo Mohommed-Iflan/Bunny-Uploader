@@ -38,7 +38,7 @@ async def handle_link(message: types.Message):
     # Expect format: filename.mp4 https://t.me/...
     parts = text.split()
     if len(parts) != 2:
-        await message.answer("❌ Format:\n<filename>.mp4 <telegram_file_link>")
+        await message.answer("❌ Format:\n&lt;filename&gt;.mp4 &lt;telegram_file_link&gt;")
         return
 
     filename, file_link = parts
