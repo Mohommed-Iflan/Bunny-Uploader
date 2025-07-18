@@ -1,21 +1,16 @@
 import os
-import logging
 import aiohttp
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+import logging
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.enums import ParseMode
+from aiogram.webhook.aiohttp_server import setup_application
 from aiohttp import web
-from dotenv import load_dotenv
 
-# Load .env file if running locally
-load_dotenv()
-
-# Environment variables
+# Load from environment
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-BUNNY_API_KEY = os.getenv("BUNNY_API_KEY")
-BUNNY_STORAGE_ZONE = os.getenv("BUNNY_STORAGE_ZONE")
-BUNNY_STORAGE_REGION = os.getenv("BUNNY_STORAGE_REGION", "storage.bunnycdn.com")
-BUNNY_PULLZONE_HOSTNAME = os.getenv("BUNNY_PULLZONE_HOSTNAME")  # e.g. stream.benthamizha.online
+BUNNY_STORAGE_ZONE = os.getenv("BUNNY_STORAGE_ZONE")       # e.g., myzone
+BUNNY_STORAGE_API_KEY = os.getenv("BUNNY_STORAGE_API_KEY") # get from Bunny dashboard
+BUNNY_HOSTNAME = "storage.bunnycdn.com"                    # Bunny hostname
 
 if not TELEGRAM_TOKEN:
     raise Exception("❌ TELEGRAM_TOKEN environment variable not set.")
@@ -25,83 +20,58 @@ dp = Dispatcher()
 
 logging.basicConfig(level=logging.INFO)
 
-# Start command
-@dp.message(F.text == "/start")
-async def start_cmd(message: Message):
-    await message.answer("✅ Send me a video (up to 2GB) and I’ll upload it to BunnyCDN!")
 
-# Video handler
-@dp.message(F.video)
-async def handle_video(message: Message):
-    video = message.video
-    file_id = video.file_id
+@dp.message(F.text)
+async def handle_direct_link(message: types.Message):
+    url = message.text.strip()
 
-    try:
-        # Get Telegram file path
-        file_info = await bot.get_file(file_id)
-        file_path = file_info.file_path
+    # Validate link
+    if not url.startswith("https://") or "file_" not in url:
+        await message.reply("❌ Please send a valid Telegram direct file link.")
+        return
 
-        # Generate direct download URL
-        file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-        logging.info(f"📥 Telegram File URL: {file_url}")
-
-        # Use file name or fallback
-        filename = video.file_name or f"{file_id}.mp4"
-
-        # Upload to Bunny
-        uploaded_url = await upload_to_bunny(file_url, filename)
-
-        if uploaded_url:
-            await message.reply(f"✅ Video uploaded!\n\n🎬 [Watch Here]({uploaded_url})", parse_mode="Markdown")
-        else:
-            await message.reply("❌ Upload failed. Please try again.")
-
-    except Exception as e:
-        logging.error(f"Error handling video: {e}")
-        await message.reply("⚠️ An error occurred while processing your video.")
-
-# Upload function
-async def upload_to_bunny(file_url, filename):
-    url = f"https://{BUNNY_STORAGE_REGION}/{BUNNY_STORAGE_ZONE}/{filename}"
-
-    headers = {
-        "AccessKey": BUNNY_API_KEY,
-        "Content-Type": "application/octet-stream"
-    }
+    filename = url.split("/")[-1]
 
     try:
+        await message.reply("⬇️ Downloading from Telegram...")
+
+        # Download the file from Telegram
         async with aiohttp.ClientSession() as session:
-            async with session.get(file_url) as file_response:
-                if file_response.status != 200:
-                    logging.error(f"Failed to download from Telegram: {file_response.status}")
-                    return None
-                file_data = await file_response.read()
+            async with session.get(url) as tg_resp:
+                if tg_resp.status != 200:
+                    await message.reply(f"❌ Failed to download file from Telegram. Status code: {tg_resp.status}")
+                    return
+                file_data = await tg_resp.read()
 
-            async with session.put(url, data=file_data, headers=headers) as upload_response:
-                if upload_response.status == 201:
-                    logging.info("✅ Uploaded to Bunny successfully")
-                    return f"https://{BUNNY_PULLZONE_HOSTNAME}/{filename}"
+        await message.reply("⬆️ Uploading to Bunny.net...")
+
+        # Upload to Bunny.net
+        upload_url = f"https://{BUNNY_HOSTNAME}/{BUNNY_STORAGE_ZONE}/{filename}"
+        headers = {"AccessKey": BUNNY_STORAGE_API_KEY}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.put(upload_url, data=file_data, headers=headers) as resp:
+                if resp.status in [200, 201]:
+                    bunny_stream_url = f"https://{BUNNY_STORAGE_ZONE}.b-cdn.net/{filename}"
+                    await message.reply(f"✅ Uploaded successfully!\n\n🎬 Bunny URL: {bunny_stream_url}")
                 else:
-                    logging.error(f"Upload to Bunny failed: {upload_response.status}")
-                    return None
+                    error_text = await resp.text()
+                    await message.reply(f"❌ Upload failed: {resp.status}\n{error_text}")
 
     except Exception as e:
-        logging.error(f"Exception during Bunny upload: {e}")
-        return None
+        logging.exception("Upload error")
+        await message.reply(f"❌ An error occurred:\n{str(e)}")
 
-# Webhook setup
-async def on_startup(app):
+
+# Webhook setup (for Railway)
+async def on_startup(app: web.Application):
     webhook_url = os.getenv("WEBHOOK_URL")
-    if webhook_url:
-        await bot.set_webhook(webhook_url)
-        logging.info(f"🚀 Webhook set to: {webhook_url}")
-    else:
-        logging.warning("⚠️ No WEBHOOK_URL set.")
+    if not webhook_url:
+        raise Exception("❌ WEBHOOK_URL not set")
+    await bot.set_webhook(webhook_url)
+    logging.info(f"🚀 Webhook set to: {webhook_url}")
 
 app = web.Application()
-SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
 app.on_startup.append(on_startup)
+dp.startup.register(on_startup)
 setup_application(app, dp, bot=bot)
-
-if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=8000)
