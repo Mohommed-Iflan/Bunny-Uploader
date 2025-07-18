@@ -17,32 +17,37 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 if not TELEGRAM_TOKEN or not WEBHOOK_URL:
     raise Exception("❌ TELEGRAM_TOKEN or WEBHOOK_URL not set.")
 
-# Initialize bot and dispatcher
+# Bot and Dispatcher
 bot = Bot(token=TELEGRAM_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
 
-# Simple message handler
+# Message handler
 @router.message()
 async def handle_message(message: types.Message):
-    logging.info(f"📨 Received: {message.text}")
-    await message.answer("✅ Received your message!")
+    logging.info(f"📩 Received: {message.text}")
+    await message.answer("✅ Message received!")
 
-# Startup
-async def on_startup(bot: Bot):
+# Startup and Shutdown
+async def on_startup(app: web.Application):
     await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"✅ Webhook set to {WEBHOOK_URL}")
+    logging.info(f"✅ Webhook set to: {WEBHOOK_URL}")
 
-# Shutdown
-async def on_shutdown(bot: Bot):
+async def on_shutdown(app: web.Application):
     await bot.delete_webhook()
     logging.info("🛑 Webhook deleted")
 
-# Create aiohttp app and attach bot webhook
+# AIOHTTP app
 app = web.Application()
-setup_application(app, dp, bot, on_startup=on_startup, on_shutdown=on_shutdown)
-app.router.add_get("/", lambda request: web.Response(text="✅ Bot running"))
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
+
+# Handle Telegram updates
+SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
+
+# Optional home page
+app.router.add_get("/", lambda request: web.Response(text="✅ Bot is running"))
 
 if __name__ == "__main__":
     web.run_app(app, port=8000)
