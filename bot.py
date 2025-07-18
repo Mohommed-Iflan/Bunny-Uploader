@@ -6,8 +6,8 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
+# Enable logging
 logging.basicConfig(level=logging.INFO)
-logging.info("🚀 bot.py has started")
 
 # Load environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -16,68 +16,72 @@ BUNNY_STORAGE_ZONE = os.getenv("BUNNY_STORAGE_ZONE")
 BUNNY_API_KEY = os.getenv("BUNNY_API_KEY")
 BUNNY_STORAGE_HOST = os.getenv("BUNNY_STORAGE_HOST")  # Example: storage.bunnycdn.com
 
-# Validate env
-if not all([TELEGRAM_TOKEN, WEBHOOK_URL, BUNNY_STORAGE_ZONE, BUNNY_API_KEY, BUNNY_STORAGE_HOST]):
-    raise Exception("❌ Missing environment variables.")
+# Verify all variables
+required_vars = [TELEGRAM_TOKEN, WEBHOOK_URL, BUNNY_STORAGE_ZONE, BUNNY_API_KEY, BUNNY_STORAGE_HOST]
+if not all(required_vars):
+    raise RuntimeError("❌ Missing required environment variables.")
 
-# Setup bot
+# Initialize Bot and Dispatcher
 bot = Bot(token=TELEGRAM_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 
-# Message handler
+# Handle all messages
 @dp.message()
-async def handle_message(message: types.Message):
-    text = message.text.strip()
+async def handle_video_link(message: types.Message):
+    url = message.text.strip()
 
-    if not text.startswith("http"):
-        await message.reply("❌ Please send a direct download link.")
+    if not url.startswith("http"):
+        await message.answer("❌ Please send a direct video URL.")
         return
 
-    logging.info(f"📩 Received: {text}")
-    await message.reply("⬇️ Downloading video...")
+    logging.info(f"📩 Received: {url}")
+    await message.answer("⬇️ Downloading video...")
 
     try:
-        # Extract filename from link (e.g., /stream/90?hash=xxx → 90.mp4)
-        base_name = text.split("/")[-1].split("?")[0]
-        if not base_name.lower().endswith(".mp4"):
+        # Extract filename from link
+        base_name = url.split("/")[-1].split("?")[0]
+        if not base_name.endswith(".mp4"):
             base_name += ".mp4"
 
-        # Download the video content
+        # Download the video
         async with aiohttp.ClientSession() as session:
-            async with session.get(text) as resp:
+            async with session.get(url) as resp:
                 if resp.status != 200:
                     raise Exception(f"Download failed with status {resp.status}")
                 video_data = await resp.read()
 
         # Upload to Bunny
         upload_url = f"https://{BUNNY_STORAGE_HOST}/{BUNNY_STORAGE_ZONE}/{base_name}"
-        headers = {"AccessKey": BUNNY_API_KEY, "Content-Type": "application/octet-stream"}
+        headers = {
+            "AccessKey": BUNNY_API_KEY,
+            "Content-Type": "application/octet-stream"
+        }
 
         async with aiohttp.ClientSession() as session:
-            async with session.put(upload_url, headers=headers, data=video_data) as resp:
-                if resp.status != 201:
-                    raise Exception(f"Bunny upload failed: {resp.status}")
-        
+            async with session.put(upload_url, headers=headers, data=video_data) as upload_resp:
+                if upload_resp.status != 201:
+                    raise Exception(f"Bunny upload failed with status {upload_resp.status}")
+
         stream_url = f"https://video.bunnycdn.com/{base_name}"
-        await message.reply(f"✅ Uploaded successfully!\n🎥 {stream_url}")
+        await message.answer(f"✅ Uploaded successfully!\n🎥 {stream_url}")
 
     except Exception as e:
         logging.error(f"❌ Error: {e}")
-        await message.reply(f"❌ Upload failed: {e}")
+        await message.answer(f"❌ Upload failed: {e}")
 
-# Startup and shutdown
-async def on_startup(bot):
+# Webhook setup
+async def on_startup(bot: Bot):
     await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"✅ Webhook set: {WEBHOOK_URL}")
+    logging.info(f"✅ Webhook set to {WEBHOOK_URL}")
 
-async def on_shutdown(bot):
+async def on_shutdown(bot: Bot):
     await bot.delete_webhook()
-    logging.info("🛑 Bot shutdown")
+    logging.info("🛑 Webhook deleted")
 
-# Web app (for Railway/Koyeb)
+# Setup aiohttp app
 app = web.Application()
 SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
 setup_application(app, dp, bot=bot, on_startup=on_startup, on_shutdown=on_shutdown)
 
 if __name__ == "__main__":
-    web.run_app(app, port=8000)
+    web.run_app(app, port=int(os.getenv("PORT", 8000)))
