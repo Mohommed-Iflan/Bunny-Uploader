@@ -1,77 +1,107 @@
 import os
 import logging
 import aiohttp
-from aiohttp import web
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import FSInputFile
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
+from dotenv import load_dotenv
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+# Load .env file if running locally
+load_dotenv()
 
-# Bot token and Bunny config from environment
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-BUNNY_STORAGE_KEY = os.getenv("BUNNY_STORAGE_KEY")
-BUNNY_STORAGE_NAME = os.getenv("BUNNY_STORAGE_NAME")  # e.g. benthamizha
-BUNNY_HOST = os.getenv("BUNNY_HOST")  # e.g. storage.bunnycdn.com
-BUNNY_PULLZONE_URL = os.getenv("BUNNY_PULLZONE_URL")  # e.g. https://stream.benthamizha.online/
+# Environment variables
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+BUNNY_API_KEY = os.getenv("BUNNY_API_KEY")
+BUNNY_STORAGE_ZONE = os.getenv("BUNNY_STORAGE_ZONE")
+BUNNY_STORAGE_REGION = os.getenv("BUNNY_STORAGE_REGION", "storage.bunnycdn.com")
+BUNNY_PULLZONE_HOSTNAME = os.getenv("BUNNY_PULLZONE_HOSTNAME")  # e.g. stream.benthamizha.online
 
-bot = Bot(token=BOT_TOKEN)
+if not TELEGRAM_TOKEN:
+    raise Exception("❌ TELEGRAM_TOKEN environment variable not set.")
+
+bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# Handle videos
-@dp.message()
-async def handle_video(message: types.Message):
-    if not message.video:
-        await message.reply("❌ Please send a video file.")
-        return
+logging.basicConfig(level=logging.INFO)
 
-    file_id = message.video.file_id
-    file = await bot.get_file(file_id)
+# Start command
+@dp.message(F.text == "/start")
+async def start_cmd(message: Message):
+    await message.answer("✅ Send me a video (up to 2GB) and I’ll upload it to BunnyCDN!")
 
-    telegram_file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
-    file_name = file.file_path.split("/")[-1]
+# Video handler
+@dp.message(F.video)
+async def handle_video(message: Message):
+    video = message.video
+    file_id = video.file_id
 
-    logging.info(f"📥 Received video: {file_name}")
-    logging.info(f"➡️ Telegram file URL: {telegram_file_url}")
+    try:
+        # Get Telegram file path
+        file_info = await bot.get_file(file_id)
+        file_path = file_info.file_path
 
-    # Upload to Bunny
-    bunny_url = f"https://{BUNNY_HOST}/{BUNNY_STORAGE_NAME}/{file_name}"
+        # Generate direct download URL
+        file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+        logging.info(f"📥 Telegram File URL: {file_url}")
+
+        # Use file name or fallback
+        filename = video.file_name or f"{file_id}.mp4"
+
+        # Upload to Bunny
+        uploaded_url = await upload_to_bunny(file_url, filename)
+
+        if uploaded_url:
+            await message.reply(f"✅ Video uploaded!\n\n🎬 [Watch Here]({uploaded_url})", parse_mode="Markdown")
+        else:
+            await message.reply("❌ Upload failed. Please try again.")
+
+    except Exception as e:
+        logging.error(f"Error handling video: {e}")
+        await message.reply("⚠️ An error occurred while processing your video.")
+
+# Upload function
+async def upload_to_bunny(file_url, filename):
+    url = f"https://{BUNNY_STORAGE_REGION}/{BUNNY_STORAGE_ZONE}/{filename}"
+
     headers = {
-        "AccessKey": BUNNY_STORAGE_KEY,
+        "AccessKey": BUNNY_API_KEY,
         "Content-Type": "application/octet-stream"
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(telegram_file_url) as tg_resp:
-            if tg_resp.status != 200:
-                await message.reply("❌ Failed to download video from Telegram.")
-                return
-            video_data = await tg_resp.read()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(file_url) as file_response:
+                if file_response.status != 200:
+                    logging.error(f"Failed to download from Telegram: {file_response.status}")
+                    return None
+                file_data = await file_response.read()
 
-        async with session.put(bunny_url, data=video_data, headers=headers) as bunny_resp:
-            if bunny_resp.status != 201:
-                await message.reply(f"❌ Bunny upload failed ({bunny_resp.status}).")
-                return
+            async with session.put(url, data=file_data, headers=headers) as upload_response:
+                if upload_response.status == 201:
+                    logging.info("✅ Uploaded to Bunny successfully")
+                    return f"https://{BUNNY_PULLZONE_HOSTNAME}/{filename}"
+                else:
+                    logging.error(f"Upload to Bunny failed: {upload_response.status}")
+                    return None
 
-    # Construct and reply with BunnyCDN URL
-    video_link = f"{BUNNY_PULLZONE_URL.rstrip('/')}/{file_name}"
-    await message.reply(f"✅ Uploaded!\n🎬 Watch: {video_link}")
+    except Exception as e:
+        logging.error(f"Exception during Bunny upload: {e}")
+        return None
 
-# Health check
-async def health(request):
-    return web.Response(text="Bot is running")
-
+# Webhook setup
 async def on_startup(app):
-    webhook_url = f"https://{os.getenv('RAILWAY_STATIC_URL')}/"
-    await bot.set_webhook(webhook_url)
-    logging.info(f"🚀 Webhook set to: {webhook_url}")
+    webhook_url = os.getenv("WEBHOOK_URL")
+    if webhook_url:
+        await bot.set_webhook(webhook_url)
+        logging.info(f"🚀 Webhook set to: {webhook_url}")
+    else:
+        logging.warning("⚠️ No WEBHOOK_URL set.")
 
 app = web.Application()
-app.router.add_get("/", health)
 SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
-setup_application(app, dp, bot=bot)
 app.on_startup.append(on_startup)
+setup_application(app, dp, bot=bot)
 
 if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    web.run_app(app, host="0.0.0.0", port=8000)
